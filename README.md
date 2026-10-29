@@ -303,14 +303,16 @@ user = Schemas::UserInput.new(name: "Jane", email: "jane@example.com")
 user.bio # => nil (T.nilable(String))
 ```
 
-The class must inherit from `T::Struct` itself; `TypedParams` only adds the `const` declarations. Properties are immutable. Properties missing from `required`, or marked `nullable: true`, become `T.nilable` and default to `nil`.
+The class must inherit from `T::Struct` itself; `TypedParams` only adds the `const` declarations. Properties are immutable. Properties missing from `required`, or marked `nullable: true`, become `T.nilable`. Optional ones default to `nil`; a property that is both required and nullable must still be passed explicitly (`nil` is allowed), otherwise construction raises `ArgumentError`.
+
+A struct's properties are fixed once declared, so give the full definition in a single `schema` call; a later call that changes a declared property's type or nilability raises `ArgumentError`. Type unions map to `T.any(...)`, and `number` accepts both `Integer` and `Float`. Sorbet does not allow subclassing a `T::Struct`, so compose typed components with `$ref` properties instead of inheriting from them.
 
 | OpenAPI | Sorbet |
 | --- | --- |
-| `string` / `integer` / `number` / `boolean` | `String` / `Integer` / `Float` / `T::Boolean` |
+| `string` / `integer` / `number` / `boolean` | `String` / `Integer` / `T.any(Integer, Float)` / `T::Boolean` |
 | `array` | `T::Array[<items type>]` |
 | `object` | `T::Hash[String, T.untyped]` |
-| `$ref` or a component class | that component class, which must also include `TypedParams` |
+| `$ref` or a component class | that component class, which must also include `TypedParams`. Resolved from the same namespace first, then the registry by component type and scope; an ambiguous match raises |
 
 Enum values are not checked when constructing a struct; that is left to the validation middleware.
 

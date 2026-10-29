@@ -50,7 +50,7 @@ RSpec.describe OpenapiRuby::Components::TypedParams do
       email: "String",
       bio: "T.nilable(String)",
       age: "T.nilable(Integer)",
-      score: "T.nilable(Float)",
+      score: "T.nilable(T.any(Integer, Float))",
       active: "T.nilable(T::Boolean)",
       tags: "T.nilable(T::Array[String])",
       meta: "T.nilable(T::Hash[String, T.untyped])"
@@ -94,11 +94,46 @@ RSpec.describe OpenapiRuby::Components::TypedParams do
     }.to raise_error(ArgumentError, /Missing/)
   end
 
-  it "inherits props in subclasses" do
-    child = Class.new(user_input)
-    stub_const("AdminInput", child)
+  it "accepts integers for number properties" do
+    expect(user_input.new(name: "A", email: "a@b.c", score: 1).score).to eq(1)
+  end
 
-    expect(child.new(name: "A", email: "a@b.c").name).to eq("A")
+  it "maps type unions to T.any" do
+    klass = create_struct("Union") do
+      schema(type: :object, properties: {v: {type: [:string, :integer, :null]}})
+    end
+
+    expect(klass.props[:v][:type_object].to_s).to eq("T.nilable(T.any(String, Integer))")
+  end
+
+  it "requires required nullable properties to be passed" do
+    klass = create_struct("Nullable") do
+      schema(type: :object, required: %w[note], properties: {note: {type: :string, nullable: true}})
+    end
+
+    expect { klass.new }.to raise_error(ArgumentError, /note/)
+    expect(klass.new(note: nil).note).to be_nil
+  end
+
+  it "rejects later schema calls that change a declared prop" do
+    klass = create_struct("Evolving") do
+      schema(type: :object, properties: {name: {type: :string}})
+    end
+
+    expect { klass.schema(required: %w[name]) }.to raise_error(ArgumentError, /name/)
+  end
+
+  it "does not resolve refs to a class of another component type or scope" do
+    other = Class.new
+    stub_const("Other::Address", other)
+    other.include(OpenapiRuby::Components::Base)
+    other.component_type(:parameters)
+
+    expect {
+      create_struct("NeedsAddress") do
+        schema(type: :object, properties: {a: {"$ref" => "#/components/schemas/Address"}})
+      end
+    }.to raise_error(ArgumentError, /Address/)
   end
 
   it "requires a T::Struct that includes Base" do

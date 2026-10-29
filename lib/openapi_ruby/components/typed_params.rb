@@ -16,7 +16,7 @@ module OpenapiRuby
       SCALAR_TYPES = {
         "string" => String,
         "integer" => Integer,
-        "number" => Float,
+        "number" => T.any(Integer, Float),
         "boolean" => T::Boolean
       }.freeze
 
@@ -29,10 +29,31 @@ module OpenapiRuby
         end
 
         base.extend ClassMethods
+        base.prepend RequiredNullableCheck
         base.send(:define_struct_props)
       end
 
+      # T::Struct treats every T.nilable prop as optional, so a property the
+      # schema requires but allows to be null must be checked on construction.
+      module RequiredNullableCheck
+        def initialize(hash = {})
+          missing = self.class.required_nullable_props.reject { |name| hash.key?(name) }
+          unless missing.empty?
+            raise ArgumentError, "#{self.class.name}: missing required properties: #{missing.join(", ")}"
+          end
+
+          super
+        end
+      end
+
       module ClassMethods
+        def required_nullable_props
+          required = Array(_schema_definition["required"])
+          (_schema_definition["properties"] || {}).filter_map do |name, spec|
+            name.to_sym if required.include?(name) && nullable_spec?(spec)
+          end
+        end
+
         def schema(definition = nil)
           result = super
           define_struct_props if definition
@@ -47,15 +68,29 @@ module OpenapiRuby
 
           (definition["properties"] || {}).each do |name, spec|
             prop_name = name.to_sym
-            next if props.key?(prop_name)
-
             type = struct_type_for(spec)
+
             if required.include?(name) && !nullable_spec?(spec)
-              const prop_name, type
+              declare_struct_prop(prop_name, type)
             else
-              const prop_name, T.nilable(type), default: nil
+              declare_struct_prop(prop_name, T.nilable(type), default: nil)
             end
           end
+        end
+
+        # A T::Struct prop can't be redefined, so a later schema call that
+        # changes an already-declared prop's type or nilability is rejected.
+        def declare_struct_prop(prop_name, type, **options)
+          existing = props[prop_name]
+          if existing
+            return if existing[:type_object] == T::Utils.coerce(type)
+
+            raise ArgumentError,
+              "#{name}: cannot change #{prop_name} from #{existing[:type_object]} to #{type} " \
+              "after it was declared; set the full definition in a single schema call"
+          end
+
+          const prop_name, type, **options
         end
 
         def nullable_spec?(spec)
@@ -65,8 +100,15 @@ module OpenapiRuby
         def struct_type_for(spec)
           return struct_class_for_ref(spec["$ref"]) if spec["$ref"]
 
-          type = Array(spec["type"]).reject { |t| t == "null" }.first
+          types = Array(spec["type"]).reject { |t| t == "null" }.map { |t| struct_type_for_name(t, spec) }
+          case types.size
+          when 0 then T.untyped
+          when 1 then types.first
+          else T.any(*types)
+          end
+        end
 
+        def struct_type_for_name(type, spec)
           case type
           when *SCALAR_TYPES.keys
             SCALAR_TYPES.fetch(type)
@@ -81,11 +123,11 @@ module OpenapiRuby
         end
 
         def struct_class_for_ref(ref)
-          component = ref.split("/").last
+          _, _, type, component = ref.split("/")
           klass = [module_parent, Object].filter_map { |scope|
             "#{scope}::#{component}".delete_prefix("Object::").safe_constantize
           }.first
-          klass ||= Registry.instance.all_registered_classes.find { |c| c.component_name == component }
+          klass ||= registry_class_for(component, type.to_sym)
 
           unless klass && klass < TypedParams
             raise ArgumentError,
@@ -93,6 +135,21 @@ module OpenapiRuby
           end
 
           klass
+        end
+
+        # Same short name, same component type, and a scope this component
+        # shares (an unscoped component is visible everywhere). Ambiguity is an
+        # error rather than a registration-order guess.
+        def registry_class_for(component, type)
+          candidates = Registry.instance.components_for(type).values.select { |c|
+            c.component_name == component &&
+              (c._component_scopes.empty? || _component_scopes.empty? || (c._component_scopes & _component_scopes).any?)
+          }
+          return candidates.first if candidates.size <= 1
+
+          raise ArgumentError,
+            "#{name}: #{component} is ambiguous (#{candidates.map(&:name).join(", ")}); " \
+            "reference it by class instead"
         end
       end
     end

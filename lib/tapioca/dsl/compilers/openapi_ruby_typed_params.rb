@@ -23,9 +23,16 @@ module Tapioca
         sig { override.void }
         def decorate
           root.create_path(constant) do |klass|
-            constant.props.each do |name, rules|
-              klass.create_method(name.to_s, return_type: rules.fetch(:type_object).to_s)
+            params = constant.props.map do |name, rules|
+              type = rules.fetch(:type_object).to_s
+              klass.create_method(name.to_s, return_type: type)
+              if rules.key?(:default)
+                create_kw_opt_param(name.to_s, type: type, default: "nil")
+              else
+                create_kw_param(name.to_s, type: type)
+              end
             end
+            klass.create_method("initialize", parameters: params, return_type: "void")
           end
         end
       end
