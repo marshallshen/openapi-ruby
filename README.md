@@ -277,6 +277,45 @@ end
 
 Works with [ActionPolicy](https://github.com/palkan/action_policy) — use `permitted_params` inside your policy's `params_filter` block.
 
+### Typed Params (Sorbet)
+
+Projects that use [Sorbet](https://sorbet.org/) can derive a `T::Struct` from a component instead of declaring it twice. This is opt-in: `sorbet-runtime` is not a dependency of openapi_ruby, so add it to your Gemfile and require `openapi_ruby/sorbet`.
+
+```ruby
+require "openapi_ruby/sorbet"
+
+class Schemas::UserInput < T::Struct
+  include OpenapiRuby::Components::Base
+  include OpenapiRuby::Components::TypedParams
+
+  schema(
+    type: :object,
+    required: %w[name email],
+    properties: {
+      name: {type: :string},
+      email: {type: :string},
+      bio: {type: :string, nullable: true}
+    }
+  )
+end
+
+user = Schemas::UserInput.new(name: "Jane", email: "jane@example.com")
+user.bio # => nil (T.nilable(String))
+```
+
+The class must inherit from `T::Struct` itself; `TypedParams` only adds the `const` declarations. Properties are immutable. Properties missing from `required`, or marked `nullable: true`, become `T.nilable` and default to `nil`.
+
+| OpenAPI | Sorbet |
+| --- | --- |
+| `string` / `integer` / `number` / `boolean` | `String` / `Integer` / `Float` / `T::Boolean` |
+| `array` | `T::Array[<items type>]` |
+| `object` | `T::Hash[String, T.untyped]` |
+| `$ref` or a component class | that component class, which must also include `TypedParams` |
+
+Enum values are not checked when constructing a struct; that is left to the validation middleware.
+
+To make the generated readers visible to Sorbet, run the bundled Tapioca compiler: `bin/tapioca dsl Schemas::UserInput`.
+
 ### Component Generator
 
 ```bash
